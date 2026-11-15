@@ -338,9 +338,43 @@ function startGps(cb){
   if (window.isSecureContext === false){ toast("El navegador no da el GPS a un archivo abierto desde el dispositivo (" + location.protocol + "). Abre la herramienta desde una dirección https.", 9000); return; }
   var first = true;
   gpsWatch = navigator.geolocation.watchPosition(function(p){
-    var xy = toXY(p.coords.latitude, p.coords.longitude); gps = {x:xy[0], y:xy[1], lat:p.coords.latitude, lon:p.coords.longitude, acc:p.coords.accuracy || 10, t:Date.now()};
+    var xy = toXY(p.coords.latitude, p.coords.longitude); gps = {x:xy[0], y:xy[1], lat:p.coords.latitude, lon:p.coords.longitude, acc:p.coords.accuracy || 10, t:Date.now(), ts:p.timestamp};
+    gpsSubs.slice().forEach(function(f){ f(gps); });
     if (follow) centerOn(gps.x, gps.y); draw(); if (first){ first = false; if (cb) cb(); }
-  }, function(err){ gpsWatch = null; toast((err.code === 1 ? "Sin permiso de ubicación" : (err.code === 3 ? "El GPS no ha respondido a tiempo" : "No se pudo obtener la posición GPS")) + " (" + (err.message || "código " + err.code) + ")", 9000); }, {enableHighAccuracy:true, maximumAge:3000, timeout:20000});
+  }, function(err){
+    // 2 (no fix yet) and 3 (timeout) are passing: the watch keeps running, so keep collecting. Only a refused permission ends it.
+    if (err.code !== 1){ if (!avgStop && !gpsWarned){ gpsWarned = true; toast("Buscando señal GPS… (" + (err.message || "código " + err.code) + ")", 5000); } return; }
+    navigator.geolocation.clearWatch(gpsWatch); gpsWatch = null; if (avgAbort) avgAbort(); toast((err.code === 1 ? "Sin permiso de ubicación" : (err.code === 3 ? "El GPS no ha respondido a tiempo" : "No se pudo obtener la posición GPS")) + " (" + (err.message || "código " + err.code) + ")", 9000); }, {enableHighAccuracy:true, maximumAge:3000, timeout:20000});
+}
+/* GPS averaging: while the person stands still, collect fixes for AVG_MS and keep the accuracy-weighted mean.
+   Fixes worse than AVG_MAX m are ignored; if none is good enough, the person places the point on the image instead. */
+var gpsSubs = [], avgStop = null, avgAbort = null, gpsWarned = false, AVG_MS = 15000, AVG_MAX = 15;
+function avgGps(done, cancel){
+  if (avgStop) avgStop();
+  var h = $("hint"), pts = [], seen = {}, t0 = Date.now(), over = false, worst = null;
+  function on(g){ if (over || seen[g.ts]) return; seen[g.ts] = 1; worst = worst === null ? g.acc : Math.min(worst, g.acc); if (g.acc <= AVG_MAX) pts.push(g); show(); }
+  function stop(){ if (over) return; over = true; clearInterval(tick); gpsSubs = gpsSubs.filter(function(f){ return f !== on; }); avgStop = null; avgAbort = null; }
+  function finish(){
+    stop();
+    if (!pts.length){ h.hidden = true; if (cancel) cancel(); toast(worst === null ? "No llega posición GPS. Coloca el punto tocando la imagen." : "La precisión GPS no baja de ±" + Math.round(worst) + " m. Coloca el punto tocando la imagen.", 8000); return; }
+    var sw = 0, sx = 0, sy = 0; pts.forEach(function(p){ var w = 1/(p.acc*p.acc); sw += w; sx += p.x*w; sy += p.y*w; });
+    var acc = pts.map(function(p){ return p.acc; }).sort(function(a,b){ return a-b; })[Math.floor(pts.length/2)];
+    var ll = toLL(sx/sw, sy/sw); gps = {x:sx/sw, y:sy/sw, lat:ll[0], lon:ll[1], acc:acc, t:Date.now(), ts:gps.ts};
+    h.hidden = true; done(sx/sw, sy/sw, "GPS, media de " + pts.length + " lecturas ±" + Math.round(acc) + " m");
+  }
+  function show(){
+    if (over) return; var left = Math.max(0, Math.ceil((AVG_MS - (Date.now() - t0))/1000)), last = pts.length ? pts[pts.length-1].acc : worst;
+    $("h-av").textContent = "Quieto junto al punto: " + left + " s · " + pts.length + " lecturas" + (last !== null ? " · ±" + Math.round(last) + " m" : "");
+    $("h-now").disabled = !pts.length;
+    if (left === 0) finish();
+  }
+  h.innerHTML = '<span id="h-av"></span><button class="btn" id="h-now">Usar ya</button><button class="btn" id="h-x">Cancelar</button>'; h.hidden = false;
+  $("h-now").onclick = finish;
+  $("h-x").onclick = function(){ stop(); h.hidden = true; if (cancel) cancel(); };
+  var tick = setInterval(show, 500);
+  gpsSubs.push(on); avgStop = stop; avgAbort = function(){ stop(); h.hidden = true; if (cancel) cancel(); }; show();
+  if (gps && Date.now() - gps.t < 2000) on(gps);
+  startGps();
 }
 function centerOn(x,y){ var q = scr(x,y); view.ox += W/2 - q[0]; view.oy += H/2 - q[1]; }
 $("z-gps").onclick = function(){ follow = true; startGps(function(){ if (gps){ if (view.s < 2) zoomAt(3/view.s, W/2, H/2); centerOn(gps.x,gps.y); draw(); toast("Precisión GPS ±" + Math.round(gps.acc) + " m"); } }); if (gps){ centerOn(gps.x,gps.y); draw(); } };
@@ -350,19 +384,20 @@ var addMode = null, tpl = null;
 function setAdd(mode, t){
   addMode = mode; tpl = mode ? (t || null) : null; $("b-tree").className = "btn" + (mode === "tree" ? " on" : ""); $("b-hole").className = "btn" + (mode === "hole" ? " on" : "");
   var h = $("hint");
-  if (!mode){ h.hidden = true; return; }
+  if (!mode){ if (avgStop) avgStop(); h.hidden = true; return; }
   showView("map"); closeSheet();
   h.innerHTML = '<span>Toca el mapa donde está el ' + (mode === "tree" ? (tpl && tpl.sp ? "siguiente " + esc(tpl.sp.toLowerCase()) : "árbol") : "hoyo") + '</span><button class="btn" id="h-gps">Usar mi GPS</button><button class="btn" id="h-x">Cancelar</button>';
   h.hidden = false;
   $("h-x").onclick = function(){ setAdd(null); };
-  $("h-gps").onclick = function(){ startGps(function(){ if (gps) addAt(gps.x, gps.y, "GPS ±" + Math.round(gps.acc) + " m"); }); if (gps) addAt(gps.x, gps.y, "GPS ±" + Math.round(gps.acc) + " m"); };
+  $("h-gps").onclick = function(){ avgGps(function(x, y, how){ addAt(x, y, how); }, function(){ setAdd(null); }); };
 }
 $("b-tree").onclick = function(){ setAdd(addMode === "tree" ? null : "tree"); };
 $("b-hole").onclick = function(){ setAdd(addMode === "hole" ? null : "hole"); };
 var moving = null;
 function addAt(x, y, how){
+  if (avgStop && !how) avgStop();
   var r = cur(), ll = toLL(x,y), mode = addMode, t0 = tpl; if (!mode) return;
-  if (!inside(r, x, y)){ toast("Esa posición está fuera del recinto " + r.key + ". Cambia de recinto o toca dentro del contorno."); return; }
+  if (!inside(r, x, y)){ toast("Esa posición está fuera del recinto " + r.key + ". Cambia de recinto o toca dentro del contorno.", how ? 6000 : 2600); if (how) setAdd(mode, t0); return; }
   setAdd(null);
   if (mode === "tree"){
     var n = 1; while (st.added[r.key + "-N" + pad3(n)]) n++; var id = r.key + "-N" + pad3(n);
@@ -382,7 +417,7 @@ function onTap(sx, sy){
   if (moving){ var w2 = world(sx, sy); moveTo(moving, w2[0], w2[1]); return; }
   var p = nearest(sx, sy, 24); if (p) select(p.id); else closeSheet();
 }
-function moveTo(id, x, y){ var rr = cur(); if (!inside(rr, x, y)){ toast("Esa posición está fuera del recinto " + rr.key); return; } var o = st.added[id] || st.holes[id]; var ll = toLL(x,y); o.x = x; o.y = y; o.lat = ll[0]; o.lon = ll[1]; o.t = Date.now(); moving = null; $("hint").hidden = true; save(true); refresh(); select(id); toast(id + " movido"); }
+function moveTo(id, x, y, how){ if (avgStop && !how) avgStop(); var rr = cur(); if (!inside(rr, x, y)){ toast("Esa posición está fuera del recinto " + rr.key, how ? 6000 : 2600); if (how) startMove(id); return; } var o = st.added[id] || st.holes[id]; var ll = toLL(x,y); o.x = x; o.y = y; o.lat = ll[0]; o.lon = ll[1]; o.t = Date.now(); if (how) o.n = ((o.n || "").replace(/\s*Posición por GPS[^.;]*/g, "").trim() + " Posición por " + how).trim(); moving = null; $("hint").hidden = true; save(true); refresh(); select(id); toast(id + " movido"); }
 
 /* ---------- ficha ---------- */
 var selected = null, sheet = $("sheet");
@@ -443,7 +478,7 @@ function startMove(id){
   moving = id; closeSheet(); var h = $("hint");
   h.innerHTML = '<span>Toca el mapa en la nueva posición de ' + esc(id) + '</span><button class="btn" id="h-gps">Usar mi GPS</button><button class="btn" id="h-x">Cancelar</button>'; h.hidden = false;
   $("h-x").onclick = function(){ moving = null; h.hidden = true; };
-  $("h-gps").onclick = function(){ startGps(function(){ if (gps && moving) moveTo(moving, gps.x, gps.y); }); if (gps && moving) moveTo(moving, gps.x, gps.y); };
+  $("h-gps").onclick = function(){ avgGps(function(x, y, how){ if (moving) moveTo(moving, x, y, how); }, function(){ moving = null; }); };
 }
 function confirmDel(id, fn){ $("s-delw").innerHTML = '<span class="row">¿Borrar ' + esc(id) + '? <button class="btn" id="d-y">Sí, borrar</button><button class="btn" id="d-n">No</button></span>';
   $("d-y").onclick = function(){ fn(); save(true); closeSheet(); refresh(); toast(id + " borrado"); }; $("d-n").onclick = function(){ select(id); }; }
@@ -610,7 +645,7 @@ function doImport(wb, fname){
 $("help").innerHTML =
   '<h2>Cómo hacer el conteo</h2>' +
   '<section><h3>Antes de salir</h3><ul><li>Carga el Excel más reciente con "Cargar Excel" si has trabajado en otro dispositivo.</li><li>Comprueba que el indicador de arriba no dice "Este navegador no guarda". Si lo dice, guarda el Excel cada pocos árboles.</li><li>Pulsa "Mi GPS" una vez con cobertura para que el dispositivo encuentre la posición.</li></ul></section>' +
-  '<section><h3>En cada árbol</h3><ol><li>Toca el punto en el mapa, o usa "Siguiente pendiente" para ir al más cercano.</li><li>Si no hay árbol, pulsa "No es un árbol".</li><li>Si lo hay, elige la especie: el estado se pone en "Vivo" automáticamente; cámbialo a "Muerto" si hace falta. Añade la subespecie si la conoces.</li><li>Si es de otra especie, pulsa "Otra…" y escribe su nombre. Las especies que escribas se te sugerirán la próxima vez.</li><li>Si encuentras un árbol que no está en el mapa, pulsa "+ Árbol" y toca su posición o usa tu GPS.</li><li>Para marcar un sitio donde plantar en el futuro, pulsa "+ Hoyo".</li></ol></section>' +
+  '<section><h3>En cada árbol</h3><ol><li>Toca el punto en el mapa, o usa "Siguiente pendiente" para ir al más cercano.</li><li>Si no hay árbol, pulsa "No es un árbol".</li><li>Si lo hay, elige la especie: el estado se pone en "Vivo" automáticamente; cámbialo a "Muerto" si hace falta. Añade la subespecie si la conoces.</li><li>Si es de otra especie, pulsa "Otra…" y escribe su nombre. Las especies que escribas se te sugerirán la próxima vez.</li><li>Si encuentras un árbol que no está en el mapa, pulsa "+ Árbol" y toca su posición en la imagen. Si no se ve, ponte junto al tronco y pulsa "Usar mi GPS": la herramienta toma lecturas durante 15 segundos y guarda la media. Quédate quieto mientras cuenta; "Usar ya" acaba antes.</li><li>Para marcar un sitio donde plantar en el futuro, pulsa "+ Hoyo".</li></ol></section>' +
   '<section><h3>Recinto 32-5-7 Garrovers joves</h3><p style="margin:0">La foto del SIGPAC es de cuando había almendros, así que aquí la imagen es de Google Maps y solo aparecen las 4 copas que se ven. Los algarrobos jóvenes se añaden en campo: pulsa "+ Árbol", toca su posición (o "Usar mi GPS") y elige Algarrobo. Después, en la ficha, "+ Otro algarrobo" añade el siguiente ya con la especie puesta.</p></section>' +
   '<section><h3>Qué significa cada color</h3><ul><li>Verde: copa visible en las dos imágenes. Casi seguro un árbol.</li><li>Naranja: solo en la ortofoto del SIGPAC (2024). Puede haber desaparecido.</li><li>Cian: solo en Google Maps. Suele ser un árbol joven; también puede ser un arbusto.</li><li>Amarillo discontinuo: mancha de Google dentro de matorral. Probablemente no es un árbol.</li><li>Azul discontinuo: árbol del registro SIGPAC sin copa visible. Puede estar seco o sin hoja.</li></ul></section>' +
   '<section><h3>Guardar</h3><ul><li>Todo se guarda solo en este dispositivo mientras trabajas.</li><li>"Guardar Excel" crea un archivo nuevo con la fecha y hora en el nombre: <i>inventari arbres son mas AAAA-MM-DD HHMM.xlsx</i>. Ese Excel es la base de datos; guárdalo al acabar cada recinto y al final del día.</li><li>"Cargar Excel" sustituye los datos del dispositivo por los del archivo elegido.</li></ul></section>';
