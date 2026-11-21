@@ -1,5 +1,5 @@
 // Son Mas: keeps the tool available without coverage. Online: fetches the newest version (5 s limit); offline: uses the saved copy.
-var CACHE = "sonmas-c2208a7a97";
+var CACHE = "sonmas-050ff38401";
 var FILES = ["./", "index.html", "manifest.webmanifest", "icon-192.png", "icon-512.png"];
 self.addEventListener("install", function(e){ e.waitUntil(caches.open(CACHE).then(function(c){ return c.addAll(FILES); }).then(function(){ return self.skipWaiting(); })); });
 self.addEventListener("activate", function(e){ e.waitUntil(caches.keys().then(function(ks){ return Promise.all(ks.filter(function(k){ return k !== CACHE; }).map(function(k){ return caches.delete(k); })); }).then(function(){ return self.clients.claim(); })); });
