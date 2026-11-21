@@ -548,16 +548,19 @@ function sname(r){ return (r.key + " " + r.den).slice(0, 31); }
 function buildWb(){
   var wb = XLSX.utils.book_new(), XU = XLSX.utils;
   var ws = XU.aoa_to_sheet([DATA.header].concat(st.recs)); ws["!cols"] = [10,9,9,11,22,15].map(function(w){ return {wch:w}; }); XU.book_append_sheet(wb, ws, "Recintos");
-  var sh = [["Recinto","Denominación","Superficie (ha)","Puntos a revisar","Pendientes","Árboles","No es árbol","Vivos","Muertos","Almendro vivo","Algarrobo vivo","Higuera vivo","Olivo vivo","Otra especie vivo","Vivos sin especie","Añadidos en campo","Hoyos","Árboles vivos / ha"]];
+  var sh = [["Recinto","Denominación","Superficie (ha)","Puntos a revisar","Pendientes","Árboles","No es árbol","Vivos","Muertos","Almendro vivo","Algarrobo vivo","Higuera vivo","Olivo vivo","Otra especie vivo","Vivos sin especie","Añadidos en campo","Hoyos","Árboles vivos / ha","Algarrobos vivos / ha","Algarrobos a plantar (mínimo)"]], MINROW = DATA.recintos.length + 3;
   DATA.recintos.forEach(function(r, i){ var c = counts(r), n = i + 2;
-    sh.push([r.key, r.den, r.sup, c.tot, c.tot - c.rev, c.arbol, c.no, c.vivo, c.muerto].concat(SPECIES.map(function(s){ return c.sp[s]; })).concat([c.otra, c.sp.none || 0, c.added, c.holes, Math.round(c.vivo/r.sup*10)/10])); });
+    sh.push([r.key, r.den, r.sup, c.tot, c.tot - c.rev, c.arbol, c.no, c.vivo, c.muerto].concat(SPECIES.map(function(s){ return c.sp[s]; })).concat([c.otra, c.sp.none || 0, c.added, c.holes, Math.round(c.vivo/r.sup*10)/10, "", ""])); });
+  sh.push([]); sh.push(["Mínimo", "Algarrobos vivos / ha", 30]);
+  sh.push(["", "Las columnas S y T solo cuentan los recintos con el conteo terminado (sin puntos pendientes). Cambia el mínimo en la celda C" + MINROW + "."]);
   var rs = XU.aoa_to_sheet(sh);
   DATA.recintos.forEach(function(r, i){ var n = i + 2, q = "'" + sname(r).replace(/'/g, "''") + "'!", rg = function(c){ return q + "$" + c + "$2:$" + c + "$5000"; };
     var F = {D:"COUNTA(" + rg("A") + ")", E:"D"+n+"-F"+n+"-G"+n, F:'COUNTIF(' + rg("I") + ',"Árbol")', G:'COUNTIF(' + rg("I") + ',"No es árbol")', H:'COUNTIFS(' + rg("I") + ',"Árbol",' + rg("L") + ',"Vivo")', I:'COUNTIFS(' + rg("I") + ',"Árbol",' + rg("L") + ',"Muerto")',
       J:'COUNTIFS(' + rg("I") + ',"Árbol",' + rg("L") + ',"Vivo",' + rg("J") + ',"Almendro")', K:'COUNTIFS(' + rg("I") + ',"Árbol",' + rg("L") + ',"Vivo",' + rg("J") + ',"Algarrobo")', L:'COUNTIFS(' + rg("I") + ',"Árbol",' + rg("L") + ',"Vivo",' + rg("J") + ',"Higuera")', M:'COUNTIFS(' + rg("I") + ',"Árbol",' + rg("L") + ',"Vivo",' + rg("J") + ',"Olivo")',
-      N:'COUNTIFS(' + rg("I") + ',"Árbol",' + rg("L") + ',"Vivo",' + rg("J") + ',"?*")-SUM(J'+n+':M'+n+')', O:"H"+n+"-SUM(J"+n+":N"+n+")", P:'COUNTIF(' + rg("B") + ',"Añadido en campo")', Q:'COUNTIF(Hoyos!$B$2:$B$5000,"' + r.key + '")', R:"IF(C"+n+">0,H"+n+"/C"+n+",0)"};
+      N:'COUNTIFS(' + rg("I") + ',"Árbol",' + rg("L") + ',"Vivo",' + rg("J") + ',"?*")-SUM(J'+n+':M'+n+')', O:"H"+n+"-SUM(J"+n+":N"+n+")", P:'COUNTIF(' + rg("B") + ',"Añadido en campo")', Q:'COUNTIF(Hoyos!$B$2:$B$5000,"' + r.key + '")', R:"IF(C"+n+">0,H"+n+"/C"+n+",0)",
+      S:'IF(E'+n+'>0,"Conteo incompleto",IF(C'+n+'>0,K'+n+'/C'+n+',0))', T:'IF(E'+n+'>0,"Conteo incompleto",MAX(0,ROUNDUP($C$'+MINROW+'*C'+n+'-K'+n+',0)))'};
     Object.keys(F).forEach(function(col){ var cell = rs[col + n]; cell.f = F[col]; }); });
-  rs["!cols"] = [10,20,11,10,10,10,10,10,10,10,10,10,10,10,10,10,10,12].map(function(w){ return {wch:w}; });
+  rs["!cols"] = [10,20,11,10,10,10,10,10,10,10,10,10,10,10,10,10,10,12,13,15].map(function(w){ return {wch:w}; });
   XU.book_append_sheet(wb, rs, "Resumen");
   XU.book_append_sheet(wb, XU.aoa_to_sheet(LEYENDA()), "Leyenda");
   DATA.recintos.forEach(function(r){
